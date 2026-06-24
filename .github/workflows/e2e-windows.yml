@@ -196,10 +196,8 @@ jobs:
 
           $e2eDir = "$env:RUNNER_TEMP\e2e-windows"
 
-          Copy-Item -Path "$env:INSTALL_DIR\e2e\windows"  -Destination $e2eDir -Force
+          Copy-Item -Path "$env:INSTALL_DIR\e2e\windows"  -Destination $e2eDir -Force -Recurse
 
-          ls $e2eDir
-          throw "fail after ls"
           $installerSuccess = $false
           try {
             # Launch the real installer
