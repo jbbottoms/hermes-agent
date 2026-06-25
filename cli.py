@@ -9317,11 +9317,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             print("  Cancelled.")
 
     def _billing_spend_bar(self, spent, limit, *, cells: int = 10):
-        """Render a 10-cell `█`/`░` spend bar + integer percent from spent/limit.
+        """Render a 10-cell `█`/`░` usage bar (filled = REMAINING) + % used.
 
-        Returns ``(bar, pct)`` where ``bar`` is like ``[████░░░░░░]`` and ``pct``
-        is the spent/limit percentage clamped to 0..100. Box-drawing glyphs are
-        not SGR codes, so this is leak-safe even without ``_b()``/``_d()``.
+        Returns ``(bar, pct)`` where ``bar`` is like ``[███████░░░]`` and ``pct``
+        is the spent/limit percentage clamped to 0..100. The bar fills by what's
+        LEFT (fuel-gauge), matching the shared model's ``fill_fraction``, the
+        top-up bar (full = balance), and the TUI — so the same account renders
+        identically on CLI and TUI. Box-drawing glyphs are not SGR codes, so this
+        is leak-safe even without ``_b()``/``_d()``.
         """
         from decimal import Decimal
 
@@ -9332,10 +9335,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             s, l = Decimal("0"), Decimal("0")
         if l <= 0:
             pct = 0
+            filled = 0
         else:
-            pct = int((s / l) * 100)
-        pct = max(0, min(100, pct))
-        filled = int(round(pct / 100 * cells))
+            pct = max(0, min(100, int((s / l) * 100)))
+            remaining = max(Decimal("0"), l - s)
+            filled = int(round((remaining / l) * cells))
         filled = max(0, min(cells, filled))
         bar = ("█" * filled) + ("░" * (cells - filled))
         return bar, pct

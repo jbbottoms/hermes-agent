@@ -98,15 +98,18 @@ function OverviewScreen({ ctx, onClose, s, t }: ScreenProps) {
   // Headline precedence: cancel-scheduled > downgrade-pending > active.
   // (Past-due/dunning was removed from the NAS read — a card-failing
   // subscriber now returns as a normal plan; no special-casing here.)
+  const cancelOn = c?.cancellation_effective_display ?? c?.cancellation_effective_at
   const cancellationNote = isCancelScheduled
-    ? c?.cancellation_effective_at
-      ? `Cancels on ${c.cancellation_effective_at} — your plan stays active until then.`
+    ? cancelOn
+      ? `Cancels on ${cancelOn} — your plan stays active until then.`
       : 'Cancellation scheduled — your plan stays active until the end of the billing period.'
     : null
 
+  const downgradeOn =
+    c?.pending_downgrade_display ?? c?.pending_downgrade_at ?? 'the end of the billing period'
   const downgradeNote =
     !isCancelScheduled && hasPendingDowngrade
-      ? `Scheduled to switch to ${c?.pending_downgrade_tier_name} on ${c?.pending_downgrade_at ?? 'the end of the billing period'}.`
+      ? `Scheduled to switch to ${c?.pending_downgrade_tier_name} on ${downgradeOn}.`
       : null
 
   // State-matched upsell/alert nudge (dollars-only; healthy stays silent).

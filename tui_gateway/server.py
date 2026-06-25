@@ -5664,6 +5664,7 @@ def _(rid, params: dict) -> dict:
 def _serialize_subscription_state(state) -> dict:
     """Serialize a SubscriptionState for the wire (Decimals → strings)."""
     from agent.billing_view import format_money
+    from agent.billing_usage import format_renews
 
     def _s(value):
         return None if value is None else str(value)
@@ -5679,8 +5680,10 @@ def _serialize_subscription_state(state) -> dict:
             "cycle_ends_at": c.cycle_ends_at,
             "pending_downgrade_tier_name": c.pending_downgrade_tier_name,
             "pending_downgrade_at": c.pending_downgrade_at,
+            "pending_downgrade_display": format_renews(c.pending_downgrade_at),
             "cancel_at_period_end": c.cancel_at_period_end,
             "cancellation_effective_at": c.cancellation_effective_at,
+            "cancellation_effective_display": format_renews(c.cancellation_effective_at),
         }
     tiers = []
     for t in state.tiers:

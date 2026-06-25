@@ -1058,8 +1058,10 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 # the telegram-parity test reads it so an entry here is a deliberate
 # "Slack-via-/hermes" decision, not a silent clamp.
 #   - topup: the billing/balance surface; reached via /hermes topup on Slack.
+#   - billing: alias of topup — route it via /hermes too, else the alias would
+#     leak a native Slack slot the canonical command is deliberately denied.
 #   - debug: the log/report upload surface; reached via /hermes debug on Slack.
-_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "debug"})
+_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "billing", "debug"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

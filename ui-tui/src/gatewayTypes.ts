@@ -168,8 +168,10 @@ export interface SubscriptionStateResponse {
     cycle_ends_at: string | null  // ISO
     pending_downgrade_tier_name: string | null
     pending_downgrade_at: string | null
+    pending_downgrade_display: string | null  // formatted pending_downgrade_at
     cancel_at_period_end: boolean // subscription scheduled to cancel at period end
     cancellation_effective_at: string | null  // ISO when cancellation takes effect
+    cancellation_effective_display: string | null  // formatted cancellation_effective_at
   } | null
   tiers: SubscriptionTierOption[]
   portal_url: string | null
