@@ -6,6 +6,7 @@
 
 import {
   Button,
+  Codicon,
   host,
   Input,
   Select,
@@ -109,8 +110,15 @@ function ProfileDescriptionRow({ profile }: { profile: KanbanProfile }) {
       >
         Save
       </Button>
-      <Button disabled={auto.isPending} onClick={() => auto.mutate()} size="xs" variant="ghost">
-        {auto.isPending ? '…' : 'Auto'}
+      {/* Overlay the spinner so the button keeps its "Auto" width — the aux
+          model can take a few seconds and a text swap would jump the row. */}
+      <Button className="relative" disabled={auto.isPending} onClick={() => auto.mutate()} size="xs" variant="ghost">
+        <span className={auto.isPending ? 'invisible' : ''}>Auto</span>
+        {auto.isPending && (
+          <span className="absolute inset-0 grid place-items-center">
+            <Codicon className="animate-spin [animation-duration:1.2s]" name="loading" size="0.75rem" />
+          </span>
+        )}
       </Button>
     </div>
   )
