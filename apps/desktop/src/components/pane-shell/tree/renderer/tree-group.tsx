@@ -16,7 +16,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@/components/ui/context-menu'
 import { DecodeText } from '@/components/ui/decode-text'
 import { DROP_SHEET_BLUR_CLASS, DROP_SHEET_CLASS, DropPill } from '@/components/ui/drop-affordance'
-import { PANE_TAB_STRIP_LINE, PaneTab, PaneTabLabel } from '@/components/ui/pane-tab'
+import { PANE_TAB_STRIP_LINE, PANE_TAB_STRIP_LINE_LEFT, PANE_TAB_STRIP_LINE_RIGHT, PaneTab, PaneTabLabel } from '@/components/ui/pane-tab'
 import { ContribBoundary } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { useI18n } from '@/i18n'
@@ -280,21 +280,16 @@ export function TreeGroup({
         />
       )}
 
-      {/* Minimized in a ROW: a narrow vertical rail — width collapses to the
-          strip, tabs read top-to-bottom in the SAME visual language as the
-          horizontal PaneTab strip (gutter bg, quaternary separators, hover
-          wash, strip line on the content-facing edge). Click a tab to
-          restore + activate; click anywhere else on the rail to restore. */}
+      {/* Minimized in a ROW: a narrow vertical rail — same PaneTab shell as
+          the horizontal strip, just `vertical`. Click a tab to restore +
+          activate; click anywhere else on the rail to restore. */}
       {verticalCollapse && (
         <ZoneMenu {...zoneMenu}>
           <div
             className={cn(
               'flex h-full w-7 shrink-0 cursor-pointer select-none flex-col items-stretch bg-(--pane-tab-strip-bg) [--pane-tab-strip-bg:var(--theme-card-seed)]',
-              // The strip line (PANE_TAB_STRIP_LINE rotated): the divider
-              // faces the content the zone collapsed away from.
-              railSide === 'right'
-                ? 'shadow-[inset_1px_0_0_var(--ui-stroke-tertiary)]'
-                : 'shadow-[inset_-1px_0_0_var(--ui-stroke-tertiary)]'
+              // Strip line faces the content the zone collapsed away from.
+              railSide === 'right' ? PANE_TAB_STRIP_LINE_LEFT : PANE_TAB_STRIP_LINE_RIGHT
             )}
             onClick={() => toggleTreeGroupMinimized(node.id, false)}
             title={t.zones.restore}
@@ -304,20 +299,14 @@ export function TreeGroup({
               role="tablist"
             >
               {shown.map(paneId => {
+                const closeable = !paneChrome(paneFor(paneId)).uncloseable
                 const title = paneFor(paneId)?.title ?? paneId
 
                 return (
-                  <button
+                  <PaneTab
+                    // Match the horizontal minimized strip: no tab is "active"
+                    // while collapsed (there's no content surface to merge into).
                     aria-selected={paneId === activeId}
-                    className={cn(
-                      // PaneTab's idle recipe, rotated 90°: gutter bg,
-                      // quaternary separators between tabs, tertiary text
-                      // with the 4% translucent hover wash.
-                      'flex max-h-48 w-full shrink-0 items-center justify-center bg-(--tab-bg) px-1.5 py-2.5 text-[0.6875rem] font-medium [-webkit-app-region:no-drag] [writing-mode:vertical-rl]',
-                      'not-first:border-t not-first:border-t-(--ui-stroke-quaternary)',
-                      'text-(--ui-text-tertiary) [--tab-bg:var(--pane-tab-strip-bg,var(--theme-card-seed))] hover:shadow-[inset_0_0_0_100vmax_color-mix(in_srgb,var(--ui-base)_4%,transparent)] hover:text-(--ui-text-secondary)',
-                      paneId === activeId && 'text-(--ui-text-secondary)'
-                    )}
                     data-tree-tab={paneId}
                     key={paneId}
                     onClick={event => {
@@ -325,11 +314,13 @@ export function TreeGroup({
                       toggleTreeGroupMinimized(node.id, false)
                       activateTreePane(node.id, paneId)
                     }}
+                    onClose={closeable ? () => closeTreePane(paneId) : undefined}
                     role="tab"
-                    type="button"
+                    side={railSide}
+                    vertical
                   >
-                    <span className="truncate">{title}</span>
-                  </button>
+                    <PaneTabLabel>{title}</PaneTabLabel>
+                  </PaneTab>
                 )
               })}
             </div>
