@@ -129,6 +129,10 @@ export function SidebarSessionRow({
           dragging && 'z-10 cursor-grabbing bg-(--ui-sidebar-surface-background)',
           className
         )}
+        data-native-drag
+        data-session-drag-id={session.id}
+        data-session-drag-profile={session.profile || 'default'}
+        data-session-drag-title={title}
         data-working={isWorking ? 'true' : undefined}
         draggable
         onDragStart={event => {
@@ -148,6 +152,13 @@ export function SidebarSessionRow({
             profile: session.profile || 'default',
             title
           })
+          // react-dnd's HTML5Backend (mounted app-wide by the file tree)
+          // cancels any window-bubbled dragstart it didn't originate
+          // (handleTopDragStart preventDefaults "foreign" draggables, killing
+          // the drag before a single dragover). Nothing above the React root
+          // needs this event — the bridge reads the drag from
+          // dataTransfer.types during dragover — so stop it here.
+          event.stopPropagation()
         }}
         ref={ref}
         style={style}

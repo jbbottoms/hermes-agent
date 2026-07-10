@@ -89,8 +89,17 @@ export function useFileDropZone({ enabled = true, onDropFiles, onDropSession }: 
         return
       }
 
+      // An outer layer (the session-tiling bridge) may have already claimed
+      // this drop via preventDefault — reset the hover state but don't ALSO
+      // act on it (a split drop must not insert a link).
+      const claimed = event.defaultPrevented
+
       event.preventDefault()
       reset()
+
+      if (claimed) {
+        return
+      }
 
       if (kind === 'session') {
         const session = readSessionDrag(event.dataTransfer)

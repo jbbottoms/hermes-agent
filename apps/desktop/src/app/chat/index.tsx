@@ -49,7 +49,6 @@ import { type DroppedFile, partitionDroppedFiles } from './hooks/use-composer-ac
 import { type DragKind, useFileDropZone } from './hooks/use-file-drop-zone'
 import { useRuntimeMessageRepository } from './runtime-repository'
 import { ScrollToBottomButton } from './scroll-to-bottom-button'
-import { SessionTileDropBridge } from './session-tile-drop-bridge'
 import { useSessionView } from './session-view'
 import { SessionActionsMenu } from './sidebar/session-actions-menu'
 import { threadLoadingState } from './thread-loading'
@@ -418,7 +417,6 @@ export function ChatView({
       data-session-anchor={sessionAnchor}
     >
       <Backdrop />
-      {isPrimary && <SessionTileDropBridge />}
       {/* Tiles get their chrome from the layout zone (chip strip); the modal
           prompt overlays stay active-session-scoped in the primary surface. */}
       {isPrimary && (
