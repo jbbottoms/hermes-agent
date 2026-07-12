@@ -1865,6 +1865,90 @@ def test_respawn_guard_blocker_auth_on_authorization_error(kanban_home):
     assert reason == "blocker_auth"
 
 
+def test_respawn_guard_spawn_failed_workspace_path_with_quota_slug_not_blocker_auth(
+    kanban_home,
+):
+    """#63248: workspace spawn_failed whose path embeds 'quota' must not
+    false-positive blocker_auth (would wedge ready forever)."""
+    now = int(time.time())
+    workspace_err = (
+        "workspace: task abc worktree path "
+        "'/home/u/worktrees/repo/issue-12-quota-governance' "
+        "is not inside a git repo and does not point at a git repo root"
+    )
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="quota-governance", assignee="alice")
+        conn.execute(
+            "INSERT INTO task_runs (task_id, status, outcome, started_at, ended_at) "
+            "VALUES (?, 'done', 'spawn_failed', ?, ?)",
+            (t, now - 30, now - 10),
+        )
+        conn.execute(
+            "UPDATE tasks SET last_failure_error = ?, consecutive_failures = 1 "
+            "WHERE id = ?",
+            (workspace_err, t),
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason is None, (
+        f"spawn_failed workspace error with slug word 'quota' must not return "
+        f"blocker_auth; got {reason!r}"
+    )
+
+
+def test_respawn_guard_gave_up_with_auth_slug_in_path_not_blocker_auth(kanban_home):
+    """#63248: gave_up + path embedding 'auth' is local, not provider auth."""
+    now = int(time.time())
+    err = (
+        "spawn failed preparing workspace "
+        "/tmp/hermes-worktrees/issue-auth-refactor/src: not a git root"
+    )
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="auth-refactor", assignee="alice")
+        conn.execute(
+            "INSERT INTO task_runs (task_id, status, outcome, started_at, ended_at) "
+            "VALUES (?, 'done', 'gave_up', ?, ?)",
+            (t, now - 40, now - 5),
+        )
+        conn.execute(
+            "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
+            (err, t),
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason is None
+
+
+def test_respawn_guard_real_quota_error_still_blocker_auth_without_local_outcome(
+    kanban_home,
+):
+    """Provider quota text with no deterministic-local run still defers."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="real-quota", assignee="alice")
+        conn.execute(
+            "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
+            ("API quota exceeded: rate limit hit", t),
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason == "blocker_auth"
+
+
+def test_respawn_guard_real_quota_still_blocker_auth_after_crashed_run(kanban_home):
+    """A real provider-style error after a crashed (non-local) run still defers."""
+    now = int(time.time())
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="crash-then-quota", assignee="alice")
+        conn.execute(
+            "INSERT INTO task_runs (task_id, status, outcome, started_at, ended_at) "
+            "VALUES (?, 'done', 'crashed', ?, ?)",
+            (t, now - 60, now - 30),
+        )
+        conn.execute(
+            "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
+            ("HTTP 429: quota exceeded for organization", t),
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason == "blocker_auth"
+
+
 def test_respawn_guard_recent_success(kanban_home):
     """A completed run within the guard window triggers recent_success."""
     with kb.connect() as conn:

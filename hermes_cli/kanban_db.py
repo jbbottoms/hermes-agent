@@ -6786,6 +6786,14 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
         blocks via the normal path — but a transient 429 gets a few
         ticks of recovery first.
 
+        Skipped when the latest ended run was a deterministic local
+        outcome (``spawn_failed`` / ``gave_up``). Workspace/spawn errors
+        embed issue slugs and paths that often contain words like
+        ``quota`` or ``auth``; treating those as provider walls wedges
+        the task in ``ready`` forever (the guard returns before spawn,
+        so ``consecutive_failures`` never advances). Those failures
+        follow the normal breaker path instead.
+
     ``"recent_success"``
         A completed run exists within ``_RESPAWN_GUARD_SUCCESS_WINDOW``
         seconds.  Useful work already succeeded for this task; wait for
@@ -6849,9 +6857,19 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
         return None
 
     # 2. Quota / auth blocker: retrying immediately will not help.
-    err = row["last_failure_error"]
-    if err and _RESPAWN_BLOCKER_RE.search(err):
-        return "blocker_auth"
+    #    Do NOT apply the regex when the latest run was a deterministic local
+    #    failure (spawn/workspace). Those messages embed paths and issue slugs
+    #    that frequently contain auth/quota slug words (e.g. "issue-12-quota-…")
+    #    and would trap the task in ready forever without advancing the
+    #    failure counter (guard returns before spawn). See #63248.
+    deterministic_local = (
+        latest_run is not None
+        and latest_run["outcome"] in ("spawn_failed", "gave_up")
+    )
+    if not deterministic_local:
+        err = row["last_failure_error"]
+        if err and _RESPAWN_BLOCKER_RE.search(err):
+            return "blocker_auth"
 
     # 3. Completed run within guard window — proof of recent success.
     #    Exception: an explicit re-queue AFTER that success (an operator
