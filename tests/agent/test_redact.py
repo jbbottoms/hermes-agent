@@ -436,6 +436,23 @@ class TestElevenLabsTavilyExaKeys:
         assert "abc123def456ghi" not in result
         assert "/home/roots/sk_hynix_chart.png" in result
 
+    def test_elevenlabs_10_char_alnum_redacted_in_code_file(self):
+        """Retain the {10,} floor under code_file=True (Teknium review #62943).
+
+        ENV-assignment redaction is skipped for code_file paths, so prefix
+        coverage must still catch a 10-character alphanumeric sk_ body.
+        Snake_case filenames remain unredacted via the underscore exclusion.
+        """
+        key = "sk_abcdefghij"  # exactly 10 alnum chars after sk_
+        assert len(key) - 3 == 10
+        result = redact_sensitive_text(
+            f"token={key} file=sk_hynix_chart.png",
+            code_file=True,
+            force=True,
+        )
+        assert "abcdefghij" not in result
+        assert "sk_hynix_chart.png" in result
+
     def test_tavily_key_redacted(self):
         text = "TAVILY_API_KEY=tvly-ABCdef123456789GHIJKL0000"
         result = redact_sensitive_text(text)
