@@ -1,0 +1,86 @@
+name: Quinn gateway patch diagnostic
+
+on:
+  pull_request:
+    types: [opened]
+
+permissions:
+  contents: write
+
+jobs:
+  diagnose:
+    if: >-
+      github.event.pull_request.title == '[quinn-bootstrap] diagnose gateway PR 62931'
+      && github.event.pull_request.user.login == 'jbbottoms'
+      && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out fork
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Capture rejected hunks without publishing product changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "Jaret Bottoms"
+          git config user.email "25535214+jbbottoms@users.noreply.github.com"
+          git remote add upstream https://github.com/NousResearch/hermes-agent.git
+          git fetch --no-tags upstream main
+          git fetch --no-tags origin fix/profile-gateway-inheritance-label
+          git checkout -B quinn/gateway-62931-diagnostics upstream/main
+          git show --format= --binary b48cc2cfd15ba36b1150bd987f1c38c22cc60185 > /tmp/62931.patch
+          set +e
+          git apply --reject --whitespace=nowarn /tmp/62931.patch >/tmp/apply-output.txt 2>&1
+          APPLY_STATUS=$?
+          set -e
+          {
+            echo "Gateway PR #62931 current-main patch diagnostic"
+            echo "upstream_main=$(git rev-parse upstream/main)"
+            echo "source_commit=b48cc2cfd15ba36b1150bd987f1c38c22cc60185"
+            echo "git_apply_status=${APPLY_STATUS}"
+            echo
+            echo "== git apply output =="
+            cat /tmp/apply-output.txt
+            echo
+            echo "== rejected files =="
+            find . -name '*.rej' -print | sort
+            echo
+            for reject in $(find . -name '*.rej' -print | sort); do
+              echo "== ${reject} =="
+              cat "${reject}"
+              echo
+            done
+            echo "== working tree after partial apply =="
+            git status --short
+          } >/tmp/gateway-62931-diagnostic.txt
+          git reset --hard upstream/main
+          git clean -fdx
+          mkdir -p diagnostics
+          cp /tmp/gateway-62931-diagnostic.txt diagnostics/gateway-62931.txt
+          git add diagnostics/gateway-62931.txt
+          git commit -m "docs: capture gateway PR 62931 patch drift"
+          git push --force origin HEAD:quinn/gateway-62931-diagnostics
+
+  cleanup:
+    if: always() && github.event.pull_request.title == '[quinn-bootstrap] diagnose gateway PR 62931'
+    needs: [diagnose]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Remove one-shot workflow from fork main
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: main
+          fetch-depth: 0
+      - shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "Jaret Bottoms"
+          git config user.email "25535214+jbbottoms@users.noreply.github.com"
+          rm -f .github/workflows/quinn-gateway-diagnostic.yml
+          git add -A
+          git commit -m "chore: remove gateway patch diagnostic"
+          git push origin HEAD:main
