@@ -1,0 +1,540 @@
+name: Quinn PR hunt v2
+
+on:
+  pull_request:
+    types: [opened]
+
+permissions:
+  contents: write
+
+jobs:
+  search-glob-recovery:
+    if: >-
+      github.event.pull_request.title == '[quinn-bootstrap] run hermes PR hunt v2'
+      && github.event.pull_request.user.login == 'jbbottoms'
+      && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Check out fork
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Configure upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "Jaret Bottoms"
+          git config user.email "25535214+jbbottoms@users.noreply.github.com"
+          git remote add upstream https://github.com/NousResearch/hermes-agent.git
+          git fetch --no-tags upstream main
+          git checkout -B fix/search-content-glob-recovery upstream/main
+
+      - name: Apply focused search recovery
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+
+          source_path = Path("tools/file_tools.py")
+          source = source_path.read_text(encoding="utf-8")
+
+          import_anchor = "import posixpath\n"
+          if source.count(import_anchor) != 1:
+              raise SystemExit(f"expected one import anchor, found {source.count(import_anchor)}")
+          if "import re\n" not in source:
+              source = source.replace(import_anchor, import_anchor + "import re\n", 1)
+
+          search_anchor = '''
+
+          def search_tool(pattern: str, target: str = "content", path: str = ".",
+          '''
+          if source.count(search_anchor) != 1:
+              raise SystemExit(f"expected one search_tool anchor, found {source.count(search_anchor)}")
+          if "def _globish_content_pattern_to_regex(" in source:
+              raise SystemExit("glob recovery helpers already present")
+
+          helpers = r'''
+
+          _GLOBISH_CONTENT_REGEX_META_RE = re.compile(r"[\[\]{}()|+^$\\\r\n]")
+          _REGEX_SYNTAX_ERROR_MARKERS = (
+              "regex parse error",
+              "invalid regular expression",
+              "repetition operator missing expression",
+              "unclosed character class",
+              "nothing to repeat",
+          )
+
+
+          def _globish_content_pattern_to_regex(pattern: str) -> str | None:
+              """Translate a clearly glob-shaped invalid content pattern once.
+
+              Content search accepts regular expressions, but smaller/local models
+              sometimes pass filename-glob syntax such as ``*foo*bar*``. Only
+              translate after Python's regex parser rejects the original pattern,
+              and only when the remaining text contains glob wildcards without any
+              other regex-only metacharacters. Valid regex semantics stay unchanged.
+              """
+              candidate = pattern.strip()
+              if candidate.startswith("(?:") and candidate.endswith(")"):
+                  candidate = candidate[3:-1]
+              if not candidate or not any(char in candidate for char in "*?"):
+                  return None
+              if _GLOBISH_CONTENT_REGEX_META_RE.search(candidate):
+                  return None
+              return re.escape(candidate).replace(r"\*", ".*").replace(r"\?", ".")
+
+
+          def _normalize_content_search_pattern(pattern: str) -> tuple[str, str | None]:
+              """Return a valid content regex plus an optional recovery warning."""
+              try:
+                  re.compile(pattern)
+              except re.error:
+                  translated = _globish_content_pattern_to_regex(pattern)
+                  if translated is not None:
+                      return translated, (
+                          "The supplied content-search pattern was not a valid regular "
+                          f"expression and was interpreted as the glob-like pattern {pattern!r} "
+                          f"(translated regex: {translated!r}). Use target='files' when "
+                          "matching file names with globs."
+                      )
+              return pattern, None
+
+
+          def _looks_like_regex_syntax_error(error: object) -> bool:
+              """Return True when a search failure is specifically regex syntax."""
+              lowered = str(error or "").lower()
+              return any(marker in lowered for marker in _REGEX_SYNTAX_ERROR_MARKERS)
+          '''
+          source = source.replace(search_anchor, helpers + search_anchor, 1)
+
+          pagination_anchor = '''        offset, limit = normalize_search_pagination(offset, limit)
+
+                  # Track searches to detect *consecutive* repeated search loops.
+          '''
+          pagination_replacement = '''        offset, limit = normalize_search_pagination(offset, limit)
+
+                  normalized_pattern = pattern
+                  pattern_warning = None
+                  if target == "content":
+                      normalized_pattern, pattern_warning = _normalize_content_search_pattern(pattern)
+
+                  # Track searches to detect *consecutive* repeated search loops.
+          '''
+          if source.count(pagination_anchor) != 1:
+              raise SystemExit(f"expected one pagination anchor, found {source.count(pagination_anchor)}")
+          source = source.replace(pagination_anchor, pagination_replacement, 1)
+
+          call_anchor = '''        result = file_ops.search(
+                      pattern=pattern, path=path, target=target, file_glob=file_glob,
+          '''
+          call_replacement = '''        result = file_ops.search(
+                      pattern=normalized_pattern, path=path, target=target, file_glob=file_glob,
+          '''
+          if source.count(call_anchor) != 1:
+              raise SystemExit(f"expected one search call anchor, found {source.count(call_anchor)}")
+          source = source.replace(call_anchor, call_replacement, 1)
+
+          result_anchor = '''        result_dict = result.to_dict(densify=True)
+
+                  if omitted:
+          '''
+          result_replacement = '''        result_dict = result.to_dict(densify=True)
+
+                  if pattern_warning and not result_dict.get("error"):
+                      existing_warning = result_dict.get("warning")
+                      result_dict["warning"] = (
+                          f"{pattern_warning} {existing_warning}"
+                          if existing_warning
+                          else pattern_warning
+                      )
+                  elif target == "content" and result_dict.get("error") and _looks_like_regex_syntax_error(
+                      result_dict["error"]
+                  ):
+                      result_dict["error"] = (
+                          f"{result_dict['error']} Content search expects a regular expression. "
+                          "Use target='files' when matching file names with globs."
+                      )
+
+                  if omitted:
+          '''
+          if source.count(result_anchor) != 1:
+              raise SystemExit(f"expected one result anchor, found {source.count(result_anchor)}")
+          source = source.replace(result_anchor, result_replacement, 1)
+          source_path.write_text(source, encoding="utf-8")
+
+          test_path = Path("tests/tools/test_search_glob_pattern_recovery.py")
+          if test_path.exists():
+              raise SystemExit(f"refusing to overwrite existing {test_path}")
+          test_path.write_text(
+              '''"""Regression coverage for glob-shaped content-search patterns (#66129)."""
+
+          import json
+          from pathlib import Path
+
+          from tools import file_tools
+          from tools.file_operations import SearchMatch, SearchResult
+
+
+          def _drive_search(monkeypatch, pattern: str, backend_result: SearchResult | None = None):
+              seen: list[str] = []
+
+              class FakeFileOps:
+                  def search(self, **kwargs):
+                      seen.append(kwargs["pattern"])
+                      return backend_result or SearchResult(
+                          matches=[
+                              SearchMatch(
+                                  path="sample.txt",
+                                  line_number=1,
+                                  content="detector scheduler",
+                              )
+                          ],
+                          total_count=1,
+                      )
+
+              with file_tools._read_tracker_lock:
+                  file_tools._read_tracker.clear()
+              monkeypatch.setattr(file_tools, "_get_file_ops", lambda _task_id: FakeFileOps())
+              monkeypatch.setattr(
+                  file_tools,
+                  "_filter_read_blocked_search_results",
+                  lambda _result, _task_id: 0,
+              )
+              monkeypatch.setattr(file_tools, "get_read_block_error", lambda _path: None)
+              monkeypatch.setattr(
+                  file_tools,
+                  "_resolve_path_for_task",
+                  lambda path, _task_id: Path(path),
+              )
+
+              response = json.loads(
+                  file_tools.search_tool(pattern, target="content", task_id="glob-recovery-test")
+              )
+              return response, seen
+
+
+          def test_bare_glob_pattern_is_translated_once(monkeypatch):
+              response, seen = _drive_search(monkeypatch, "*detector*scheduler*")
+
+              assert seen == [r".*detector.*scheduler.*"]
+              assert "error" not in response
+              assert response["total_count"] == 1
+              assert "interpreted as the glob-like pattern" in response["warning"]
+              assert "target='files'" in response["warning"]
+
+
+          def test_noncapturing_wrapper_around_glob_is_recovered(monkeypatch):
+              response, seen = _drive_search(monkeypatch, "(?:*detector*scheduler*)")
+
+              assert seen == [r".*detector.*scheduler.*"]
+              assert "error" not in response
+              assert "warning" in response
+
+
+          def test_valid_regex_is_never_rewritten(monkeypatch):
+              response, seen = _drive_search(monkeypatch, r"detector.*scheduler")
+
+              assert seen == [r"detector.*scheduler"]
+              assert "error" not in response
+              assert "warning" not in response
+
+
+          def test_invalid_non_glob_regex_keeps_error_and_adds_guidance(monkeypatch):
+              backend_error = SearchResult(
+                  error="Search failed: rg: regex parse error: unclosed character class",
+                  total_count=0,
+              )
+              response, seen = _drive_search(monkeypatch, "[", backend_error)
+
+              assert seen == ["["]
+              assert "Content search expects a regular expression" in response["error"]
+              assert "target='files'" in response["error"]
+              assert "warning" not in response
+
+
+          def test_translation_rejects_regex_intent_and_plain_text():
+              assert file_tools._globish_content_pattern_to_regex(r"\\d+") is None
+              assert file_tools._globish_content_pattern_to_regex("foo[bar]") is None
+              assert file_tools._globish_content_pattern_to_regex("plain text") is None
+          ''',
+              encoding="utf-8",
+          )
+          PY
+          rm -f .github/workflows/apply-search-content-glob-recovery.yml
+
+      - name: Install locked Python environment
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Verify and publish search fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv python install 3.11
+          uv sync --locked --python 3.11 --extra all --extra dev >/tmp/uv-sync.log 2>&1 || {
+            tail -n 120 /tmp/uv-sync.log
+            exit 1
+          }
+          source .venv/bin/activate
+          python -m pytest \
+            tests/tools/test_search_glob_pattern_recovery.py \
+            tests/tools/test_read_loop_detection.py \
+            -q >/tmp/search-tests.log 2>&1 || {
+              tail -n 160 /tmp/search-tests.log
+              exit 1
+            }
+          python -m py_compile tools/file_tools.py
+          ruff check tools/file_tools.py tests/tools/test_search_glob_pattern_recovery.py
+          git diff --check
+          git add -A
+          git commit -m "fix(files): recover glob-shaped content searches"
+          git push --force origin HEAD:fix/search-content-glob-recovery
+
+  profile-gateway-inheritance:
+    if: >-
+      github.event.pull_request.title == '[quinn-bootstrap] run hermes PR hunt v2'
+      && github.event.pull_request.user.login == 'jbbottoms'
+      && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Check out fork
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Configure upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "Jaret Bottoms"
+          git config user.email "25535214+jbbottoms@users.noreply.github.com"
+          git remote add upstream https://github.com/NousResearch/hermes-agent.git
+          git fetch --no-tags upstream main
+          git checkout -B fix/profile-gateway-inheritance-label upstream/main
+
+      - name: Port gateway inheritance fix onto current main
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: Path, old: str, new: str) -> None:
+              text = path.read_text(encoding="utf-8")
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"expected one anchor in {path}: {old!r}; found {count}")
+              path.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          gateway_path = Path("apps/desktop/src/app/settings/gateway-settings.tsx")
+          saved_anchor = '''export function savedCloudConnectionUrl(config: Pick<GatewaySettingsState, 'mode' | 'remoteUrl'>): string {
+            return config.mode === 'cloud' ? config.remoteUrl.trim().replace(/\/+$/, '').toLowerCase() : ''
+          }
+          '''
+          helper = saved_anchor + '''
+          export function localGatewayCopy(
+            scope: string | null,
+            copy: { localTitle: string; localDesc: string; inheritTitle: string; inheritDesc: string }
+          ): { title: string; description: string } {
+            return scope === null
+              ? { title: copy.localTitle, description: copy.localDesc }
+              : { title: copy.inheritTitle, description: copy.inheritDesc }
+          }
+          '''
+          replace_once(gateway_path, saved_anchor, helper)
+
+          replace_once(
+              gateway_path,
+              '''  if (!window.hermesDesktop?.getConnectionConfig) {
+            return <EmptyState description={g.unavailableDesc} title={g.unavailableTitle} />
+          }
+
+          return (
+          ''',
+              '''  if (!window.hermesDesktop?.getConnectionConfig) {
+            return <EmptyState description={g.unavailableDesc} title={g.unavailableTitle} />
+          }
+
+          const localModeCopy = localGatewayCopy(scope, g)
+
+          return (
+          ''',
+          )
+          replace_once(gateway_path, "            description={g.localDesc}", "            description={localModeCopy.description}")
+          replace_once(gateway_path, "            title={g.localTitle}", "            title={localModeCopy.title}")
+
+          replace_once(
+              Path("apps/desktop/src/i18n/types.ts"),
+              '''      localTitle: string
+                localDesc: string
+                remoteTitle: string''',
+              '''      localTitle: string
+                localDesc: string
+                inheritTitle: string
+                inheritDesc: string
+                remoteTitle: string''',
+          )
+
+          replace_once(
+              Path("apps/desktop/src/i18n/en.ts"),
+              '        `Connection used only when “${profile}” is the active profile. Set it to Local to inherit the default.`,',
+              '        `Connection used only when “${profile}” is the active profile. Choose Use default gateway to remove its override.`,',
+          )
+          replace_once(
+              Path("apps/desktop/src/i18n/en.ts"),
+              "      localDesc: 'Start a private Hermes backend on localhost. This is the default and works offline.',",
+              "      localDesc: 'Start a private Hermes backend on localhost. This is the default and works offline.',\n"
+              "      inheritTitle: 'Use default gateway',\n"
+              "      inheritDesc: \"Remove this profile's override and use the default connection.\",",
+          )
+
+          replace_once(
+              Path("apps/desktop/src/i18n/ja.ts"),
+              '        `"${profile}" がアクティブプロファイルのときのみ使用される接続。ローカルに設定するとデフォルトを継承します。`,',
+              '        `"${profile}" がアクティブプロファイルのときのみ使用される接続。「デフォルトゲートウェイを使用」を選ぶとオーバーライドが削除されます。`,',
+          )
+          replace_once(
+              Path("apps/desktop/src/i18n/ja.ts"),
+              "      localDesc:\n        'ローカルホストでプライベートな Hermes バックエンドを起動します。これがデフォルトで、オフラインでも動作します。',",
+              "      localDesc:\n        'ローカルホストでプライベートな Hermes バックエンドを起動します。これがデフォルトで、オフラインでも動作します。',\n"
+              "      inheritTitle: 'デフォルトゲートウェイを使用',\n"
+              "      inheritDesc: 'このプロファイルのオーバーライドを削除し、デフォルト接続を使用します。',",
+          )
+
+          replace_once(
+              Path("apps/desktop/src/i18n/zh-hant.ts"),
+              '      profileConnection: profile => `僅當「${profile}」為作用中設定檔時使用此連線。設為本機可繼承預設連線。`,',
+              '      profileConnection: profile => `僅當「${profile}」為作用中設定檔時使用此連線。選擇「使用預設閘道」可移除其覆寫。`,',
+          )
+          replace_once(
+              Path("apps/desktop/src/i18n/zh-hant.ts"),
+              "      localDesc: '在 localhost 啟動私有 Hermes 後端。這是預設方式，可離線使用。',",
+              "      localDesc: '在 localhost 啟動私有 Hermes 後端。這是預設方式，可離線使用。',\n"
+              "      inheritTitle: '使用預設閘道',\n"
+              "      inheritDesc: '移除此設定檔的自訂覆寫並使用預設連線。',",
+          )
+
+          replace_once(
+              Path("apps/desktop/src/i18n/zh.ts"),
+              '      profileConnection: profile => `仅当“${profile}”是当前 profile 时使用此连接。设为本地即可继承默认连接。`,',
+              '      profileConnection: profile => `仅当“${profile}”是当前 profile 时使用此连接。选择“使用默认网关”可移除其覆盖。`,',
+          )
+          replace_once(
+              Path("apps/desktop/src/i18n/zh.ts"),
+              "      localDesc: '在 localhost 启动私有 Hermes 后端。这是默认方式，并且可离线工作。',",
+              "      localDesc: '在 localhost 启动私有 Hermes 后端。这是默认方式，并且可离线工作。',\n"
+              "      inheritTitle: '使用默认网关',\n"
+              "      inheritDesc: '移除此 profile 的自定义覆盖并使用默认连接。',",
+          )
+
+          test_path = Path("apps/desktop/src/app/settings/gateway-settings.test.ts")
+          replace_once(
+              test_path,
+              "import { savedCloudConnectionUrl } from './gateway-settings'",
+              "import { localGatewayCopy, savedCloudConnectionUrl } from './gateway-settings'",
+          )
+          test = test_path.read_text(encoding="utf-8")
+          test += '''
+
+          describe('localGatewayCopy', () => {
+            const copy = {
+              localTitle: 'Local gateway',
+              localDesc: 'Start a private local backend.',
+              inheritTitle: 'Use default gateway',
+              inheritDesc: "Remove this profile's override and use the default connection."
+            }
+
+            it('keeps local gateway copy for the global scope', () => {
+              expect(localGatewayCopy(null, copy)).toEqual({
+                title: 'Local gateway',
+                description: 'Start a private local backend.'
+              })
+            })
+
+            it('uses inheritance copy for a named profile', () => {
+              expect(localGatewayCopy('work', copy)).toEqual({
+                title: 'Use default gateway',
+                description: "Remove this profile's override and use the default connection."
+              })
+            })
+          })
+          '''
+          test_path.write_text(test, encoding="utf-8")
+          PY
+          rm -f .github/workflows/rebase-profile-gateway-inheritance.yml
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Verify and publish gateway fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts >/tmp/npm-ci.log 2>&1 || {
+            tail -n 120 /tmp/npm-ci.log
+            exit 1
+          }
+          npx prettier --write \
+            apps/desktop/src/app/settings/gateway-settings.tsx \
+            apps/desktop/src/app/settings/gateway-settings.test.ts \
+            apps/desktop/src/i18n/en.ts \
+            apps/desktop/src/i18n/ja.ts \
+            apps/desktop/src/i18n/types.ts \
+            apps/desktop/src/i18n/zh-hant.ts \
+            apps/desktop/src/i18n/zh.ts
+          npm run test:ui --workspace apps/desktop -- src/app/settings/gateway-settings.test.ts >/tmp/gateway-test.log 2>&1 || {
+            tail -n 160 /tmp/gateway-test.log
+            exit 1
+          }
+          npm run typecheck --workspace apps/desktop >/tmp/gateway-typecheck.log 2>&1 || {
+            tail -n 160 /tmp/gateway-typecheck.log
+            exit 1
+          }
+          npm run lint --workspace apps/desktop -- \
+            src/app/settings/gateway-settings.tsx \
+            src/app/settings/gateway-settings.test.ts \
+            src/i18n/en.ts \
+            src/i18n/ja.ts \
+            src/i18n/types.ts \
+            src/i18n/zh-hant.ts \
+            src/i18n/zh.ts >/tmp/gateway-lint.log 2>&1 || {
+              tail -n 160 /tmp/gateway-lint.log
+              exit 1
+            }
+          git diff --check
+          git add -A
+          git commit -m "fix(desktop): clarify inherited profile gateway"
+          git push --force origin HEAD:fix/profile-gateway-inheritance-label
+
+  cleanup:
+    if: always() && github.event.pull_request.title == '[quinn-bootstrap] run hermes PR hunt v2'
+    needs: [search-glob-recovery, profile-gateway-inheritance]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Remove one-shot workflow from fork main
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: main
+          fetch-depth: 0
+      - shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "Jaret Bottoms"
+          git config user.email "25535214+jbbottoms@users.noreply.github.com"
+          rm -f .github/workflows/quinn-pr-hunt-v2.yml
+          git add -A
+          git commit -m "chore: remove one-shot Quinn PR hunt v2"
+          git push origin HEAD:main
